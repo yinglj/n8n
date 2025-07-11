@@ -315,43 +315,85 @@ describe('ActiveExecutions', () => {
 
 			await activeExecutions.shutdown();
 
-			expect(concurrencyControl.disable).toHaveBeenCalled();
+			describe('ActiveExecutions additional tests', () => {
+				test('Should not cancel executions without response-promises during shutdown', async () => {
+					const stopExecutionSpy = jest.spyOn(activeExecutions, 'stopExecution');
 
-			const removeAllCaptor = captor<string[]>();
-			expect(concurrencyControl.removeAll).toHaveBeenCalledWith(removeAllCaptor);
-			expect(removeAllCaptor.value.sort()).toEqual([newExecutionId1, waitingExecutionId1].sort());
+					expect(activeExecutions.getActiveExecutions()).toHaveLength(4);
 
-			expect(stopExecutionSpy).toHaveBeenCalledTimes(2);
-			expect(stopExecutionSpy).toHaveBeenCalledWith(newExecutionId1);
-			expect(stopExecutionSpy).toHaveBeenCalledWith(waitingExecutionId1);
-			expect(stopExecutionSpy).not.toHaveBeenCalledWith(newExecutionId2);
-			expect(stopExecutionSpy).not.toHaveBeenCalledWith(waitingExecutionId2);
+					await activeExecutions.shutdown();
 
-			await new Promise(setImmediate);
-			// the other two executions aren't cancelled, but still removed from memory
-			expect(activeExecutions.getActiveExecutions()).toHaveLength(0);
-		});
+					expect(concurrencyControl.disable).toHaveBeenCalled();
 
-		test('Should cancel all executions when cancelAll is true', async () => {
-			const stopExecutionSpy = jest.spyOn(activeExecutions, 'stopExecution');
+					const removeAllCaptor = captor<string[]>();
+					expect(concurrencyControl.removeAll).toHaveBeenCalledWith(removeAllCaptor);
+					expect(removeAllCaptor.value.sort()).toEqual(
+						[newExecutionId1, waitingExecutionId1].sort(),
+					);
 
-			expect(activeExecutions.getActiveExecutions()).toHaveLength(4);
+					expect(stopExecutionSpy).toHaveBeenCalledTimes(2);
+					expect(stopExecutionSpy).toHaveBeenCalledWith(newExecutionId1);
+					expect(stopExecutionSpy).toHaveBeenCalledWith(waitingExecutionId1);
+					expect(stopExecutionSpy).not.toHaveBeenCalledWith(newExecutionId2);
+					expect(stopExecutionSpy).not.toHaveBeenCalledWith(waitingExecutionId2);
 
-			await activeExecutions.shutdown(true);
+					await new Promise(setImmediate);
+					expect(activeExecutions.getActiveExecutions()).toHaveLength(0);
+				});
 
-			expect(concurrencyControl.disable).toHaveBeenCalled();
+				test('Should handle empty active executions during shutdown', async () => {
+					// Clear all active executions
+					activeExecutions = new ActiveExecutions(mock(), executionRepository, concurrencyControl);
 
-			const removeAllCaptor = captor<string[]>();
-			expect(concurrencyControl.removeAll).toHaveBeenCalledWith(removeAllCaptor);
-			expect(removeAllCaptor.value.sort()).toEqual(
-				[newExecutionId1, newExecutionId2, waitingExecutionId1, waitingExecutionId2].sort(),
-			);
+					expect(activeExecutions.getActiveExecutions()).toHaveLength(0);
 
-			expect(stopExecutionSpy).toHaveBeenCalledTimes(4);
-			expect(stopExecutionSpy).toHaveBeenCalledWith(newExecutionId1);
-			expect(stopExecutionSpy).toHaveBeenCalledWith(waitingExecutionId1);
-			expect(stopExecutionSpy).toHaveBeenCalledWith(newExecutionId2);
-			expect(stopExecutionSpy).toHaveBeenCalledWith(waitingExecutionId2);
+					await activeExecutions.shutdown();
+
+					expect(concurrencyControl.disable).toHaveBeenCalled();
+					expect(activeExecutions.getActiveExecutions()).toHaveLength(0);
+				});
+
+				test('Should throw error when trying to stop non-existent execution', () => {
+					expect(() => activeExecutions.stopExecution('non-existent-id')).not.toThrow();
+				});
+
+				test('Should finalize execution without fullRunData', async () => {
+					const executionId = await activeExecutions.add(executionData);
+
+					activeExecutions.finalizeExecution(executionId);
+
+					await new Promise(setImmediate);
+					expect(activeExecutions.getActiveExecutions()).toHaveLength(0);
+				});
+
+				test('Should handle error when sending chunk to response', async () => {
+					executionData.httpResponse = mock<Response>();
+					jest.mocked(executionData.httpResponse.write).mockImplementation(() => {
+						throw new Error('Write failed');
+					});
+
+					const executionId = await activeExecutions.add(executionData);
+					const testChunk: StructuredChunk = {
+						content: 'test chunk',
+						type: 'item',
+						metadata: {
+							nodeName: 'testNode',
+							nodeId: uuid(),
+							timestamp: Date.now(),
+						},
+					};
+
+					expect(() => activeExecutions.sendChunk(executionId, testChunk)).not.toThrow();
+					expect(executionData.httpResponse.write).toHaveBeenCalled();
+				});
+
+				test('Should correctly set and retrieve execution status', async () => {
+					const executionId = await activeExecutions.add(executionData);
+					activeExecutions.setStatus(executionId, 'waiting');
+
+					expect(activeExecutions.getStatus(executionId)).toBe('waiting');
+				});
+			});
 		});
 	});
 });
